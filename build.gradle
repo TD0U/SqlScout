@@ -1,0 +1,47 @@
+plugins {
+    id 'java'
+}
+
+group = 'burp.xiasql'
+version = '4.0.0-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compileOnly 'net.portswigger.burp.extensions:montoya-api:2026.4'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src/main/java']
+        }
+    }
+}
+
+tasks.named('jar') {
+    archiveBaseName = 'SqlScout'
+    archiveVersion = ''
+    manifest {
+        attributes(
+                'Burp-Extension-Class': 'burp.BurpExtender'
+        )
+    }
+}
+
+tasks.named('build') {
+    dependsOn tasks.named('jar')
+}
