@@ -66,6 +66,8 @@ public final class ExtensionState {
     private volatile PayloadGroupMode payloadGroupMode = PayloadGroupMode.AUTO;
     private volatile String customPayloadText = DEFAULT_PAYLOADS;
     private volatile String errorPatternText = DEFAULT_ERROR_PATTERNS;
+    private volatile int concurrentScans = 4;
+    private volatile int requestDelayMs = 0;
     private final List<String> uiLog = new CopyOnWriteArrayList<>();
     private final List<Listener> listeners = new CopyOnWriteArrayList<>();
 
@@ -228,6 +230,24 @@ public final class ExtensionState {
 
     public void errorPatternText(String errorPatternText) {
         this.errorPatternText = errorPatternText == null ? "" : errorPatternText;
+        notifyListeners();
+    }
+
+    public int concurrentScans() {
+        return concurrentScans;
+    }
+
+    public void concurrentScans(int concurrentScans) {
+        this.concurrentScans = Math.max(1, Math.min(20, concurrentScans));
+        notifyListeners();
+    }
+
+    public int requestDelayMs() {
+        return requestDelayMs;
+    }
+
+    public void requestDelayMs(int requestDelayMs) {
+        this.requestDelayMs = Math.max(0, Math.min(10000, requestDelayMs));
         notifyListeners();
     }
 

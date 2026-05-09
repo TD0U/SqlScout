@@ -21,6 +21,8 @@ public final class SettingsRepository {
     private static final String KEY_PAYLOAD_GROUP_MODE = "payloadGroupMode";
     private static final String KEY_CUSTOM_PAYLOAD_TEXT = "customPayloadText";
     private static final String KEY_ERROR_PATTERN_TEXT = "errorPatternText";
+    private static final String KEY_CONCURRENT_SCANS = "concurrentScans";
+    private static final String KEY_REQUEST_DELAY_MS = "requestDelayMs";
 
     private final PersistedObject persistedObject;
 
@@ -118,6 +120,16 @@ public final class SettingsRepository {
         if (errorPatternText != null) {
             state.errorPatternText(errorPatternText);
         }
+
+        Integer concurrentScans = persistedObject.getInteger(KEY_CONCURRENT_SCANS);
+        if (concurrentScans != null) {
+            state.concurrentScans(concurrentScans.intValue());
+        }
+
+        Integer requestDelayMs = persistedObject.getInteger(KEY_REQUEST_DELAY_MS);
+        if (requestDelayMs != null) {
+            state.requestDelayMs(requestDelayMs.intValue());
+        }
     }
 
     public void save(ExtensionState state) {
@@ -139,5 +151,7 @@ public final class SettingsRepository {
         persistedObject.setString(KEY_PAYLOAD_GROUP_MODE, state.payloadGroupMode().id());
         persistedObject.setString(KEY_CUSTOM_PAYLOAD_TEXT, state.customPayloadText());
         persistedObject.setString(KEY_ERROR_PATTERN_TEXT, state.errorPatternText());
+        persistedObject.setInteger(KEY_CONCURRENT_SCANS, state.concurrentScans());
+        persistedObject.setInteger(KEY_REQUEST_DELAY_MS, state.requestDelayMs());
     }
 }

@@ -9,7 +9,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public final class ScanLogStore {
     public interface Listener {
-        void logChanged();
+        void scanAdded(ScanLogEntry entry);
+        void scanReplaced(ScanLogEntry entry);
+        void attemptAdded(ScanLogEntry entry);
+        void cleared();
     }
 
     private final AtomicInteger sequence = new AtomicInteger();
@@ -28,26 +31,22 @@ public final class ScanLogStore {
 
     public void addScan(ScanLogEntry entry) {
         scans.add(entry);
-        notifyListeners();
+        for (Listener l : listeners) { l.scanAdded(entry); }
     }
 
     public void addAttempt(ScanLogEntry entry) {
         attempts.add(entry);
-        notifyListeners();
+        for (Listener l : listeners) { l.attemptAdded(entry); }
     }
 
     public void replaceScan(ScanLogEntry entry) {
         for (int i = 0; i < scans.size(); i++) {
             if (scans.get(i).id() == entry.id()) {
                 scans.set(i, entry);
-                notifyListeners();
+                for (Listener l : listeners) { l.scanReplaced(entry); }
                 return;
             }
         }
-    }
-
-    public void update() {
-        notifyListeners();
     }
 
     public List<ScanLogEntry> scans() {
@@ -69,16 +68,10 @@ public final class ScanLogStore {
         scans.clear();
         attempts.clear();
         fingerprints.clear();
-        notifyListeners();
+        for (Listener l : listeners) { l.cleared(); }
     }
 
     public void addListener(Listener listener) {
         listeners.add(listener);
-    }
-
-    private void notifyListeners() {
-        for (Listener listener : listeners) {
-            listener.logChanged();
-        }
     }
 }

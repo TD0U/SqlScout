@@ -11,13 +11,15 @@ import java.awt.FlowLayout;
 import java.awt.GridLayout;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
-import java.util.Collections;
+import java.util.ArrayList;
 import java.util.List;
 import javax.swing.BorderFactory;
+import javax.swing.DefaultListModel;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JLabel;
+import javax.swing.JList;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
@@ -25,6 +27,8 @@ import javax.swing.JTabbedPane;
 import javax.swing.JTable;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
+import javax.swing.SpinnerNumberModel;
+import javax.swing.JSpinner;
 import javax.swing.SwingUtilities;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
@@ -34,22 +38,61 @@ import javax.swing.table.AbstractTableModel;
 public final class XiaSqlPanel {
     private final ExtensionState state;
     private final ScanLogStore logStore;
+    private final DetectionEngine engine;
     private final MainTableModel mainTableModel = new MainTableModel();
     private final AttemptTableModel attemptTableModel = new AttemptTableModel();
     private final HttpRequestEditor requestEditor;
     private final HttpResponseEditor responseEditor;
     private final JTextArea uiLogArea = new JTextArea();
     private final JPanel root;
+    private JTable mainTable;
+    private JTable attemptTable;
     private String selectedFingerprint = "";
 
     public XiaSqlPanel(MontoyaApi api, ExtensionState state, ScanLogStore logStore, DetectionEngine engine) {
         this.state = state;
         this.logStore = logStore;
+        this.engine = engine;
         this.requestEditor = api.userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
         this.responseEditor = api.userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
         this.root = buildUi();
         api.userInterface().applyThemeToComponent(root);
-        logStore.addListener(() -> SwingUtilities.invokeLater(this::refreshTables));
+
+        logStore.addListener(new ScanLogStore.Listener() {
+            @Override
+            public void scanAdded(ScanLogEntry entry) {
+                SwingUtilities.invokeLater(() -> {
+                    mainTableModel.addEntry(entry);
+                    refreshUiLog();
+                });
+            }
+
+            @Override
+            public void scanReplaced(ScanLogEntry entry) {
+                SwingUtilities.invokeLater(() -> {
+                    mainTableModel.updateEntry(entry);
+                    refreshUiLog();
+                });
+            }
+
+            @Override
+            public void attemptAdded(ScanLogEntry entry) {
+                SwingUtilities.invokeLater(() -> {
+                    attemptTableModel.addEntry(entry);
+                    refreshUiLog();
+                });
+            }
+
+            @Override
+            public void cleared() {
+                SwingUtilities.invokeLater(() -> {
+                    selectedFingerprint = "";
+                    mainTableModel.clear();
+                    attemptTableModel.clear();
+                    refreshUiLog();
+                });
+            }
+        });
     }
 
     public Component component() {
@@ -57,8 +100,8 @@ public final class XiaSqlPanel {
     }
 
     private JPanel buildUi() {
-        JTable mainTable = new JTable(mainTableModel);
-        JTable attemptTable = new JTable(attemptTableModel);
+        mainTable = new JTable(mainTableModel);
+        attemptTable = new JTable(attemptTableModel);
 
         mainTable.getSelectionModel().addListSelectionListener(e -> {
             if (e.getValueIsAdjusting()) {
@@ -69,7 +112,7 @@ public final class XiaSqlPanel {
                 ScanLogEntry entry = mainTableModel.entryAt(mainTable.convertRowIndexToModel(row));
                 selectedFingerprint = entry.fingerprint();
                 show(entry.requestResponse());
-                attemptTableModel.reload();
+                attemptTableModel.showFingerprint(selectedFingerprint);
             }
         });
         attemptTable.getSelectionModel().addListSelectionListener(e -> {
@@ -110,7 +153,12 @@ public final class XiaSqlPanel {
         JCheckBox blankValues = new JCheckBox("自定义 payload 参数值置空", state.blankValueForCustomPayloads());
         JTextField whitelist = new JTextField(state.whitelistText());
         JCheckBox whitelistEnabled = new JCheckBox("启用白名单", state.whitelistEnabled());
-        JTextField blacklist = new JTextField(state.blacklistText());
+        DefaultListModel<String> blacklistModel = new DefaultListModel<>();
+        for (String token : state.blacklistText().split(",")) {
+            String trimmed = token.trim();
+            if (!trimmed.isEmpty()) { blacklistModel.addElement(trimmed); }
+        }
+        JList<String> blacklistList = new JList<>(blacklistModel);
         JCheckBox blacklistEnabled = new JCheckBox("启用黑名单", state.blacklistEnabled());
         JTextField suffixFilters = new JTextField(state.suffixFilterText());
         JCheckBox suffixFilterEnabled = new JCheckBox("启用后缀过滤", state.suffixFilterEnabled());
@@ -121,7 +169,6 @@ public final class XiaSqlPanel {
         JTextArea errorPatterns = new JTextArea(state.errorPatternText(), 8, 18);
         uiLogArea.setEditable(false);
         whitelist.setEditable(!state.whitelistEnabled());
-        blacklist.setEditable(!state.blacklistEnabled());
         suffixFilters.setEditable(!state.suffixFilterEnabled());
 
         enabled.addActionListener(e -> state.enabled(enabled.isSelected()));
@@ -146,22 +193,6 @@ public final class XiaSqlPanel {
             @Override
             public void changedUpdate(DocumentEvent e) {
                 state.whitelistText(whitelist.getText());
-            }
-        });
-        blacklist.getDocument().addDocumentListener(new DocumentListener() {
-            @Override
-            public void insertUpdate(DocumentEvent e) {
-                state.blacklistText(blacklist.getText());
-            }
-
-            @Override
-            public void removeUpdate(DocumentEvent e) {
-                state.blacklistText(blacklist.getText());
-            }
-
-            @Override
-            public void changedUpdate(DocumentEvent e) {
-                state.blacklistText(blacklist.getText());
             }
         });
         suffixFilters.getDocument().addDocumentListener(new DocumentListener() {
@@ -201,11 +232,7 @@ public final class XiaSqlPanel {
             state.whitelistEnabled(whitelistEnabled.isSelected());
             whitelist.setEditable(!whitelistEnabled.isSelected());
         });
-        blacklistEnabled.addActionListener(e -> {
-            state.blacklistText(blacklist.getText());
-            state.blacklistEnabled(blacklistEnabled.isSelected());
-            blacklist.setEditable(!blacklistEnabled.isSelected());
-        });
+        blacklistEnabled.addActionListener(e -> state.blacklistEnabled(blacklistEnabled.isSelected()));
         suffixFilterEnabled.addActionListener(e -> {
             state.suffixFilterText(suffixFilters.getText());
             state.suffixFilterEnabled(suffixFilterEnabled.isSelected());
@@ -246,6 +273,22 @@ public final class XiaSqlPanel {
         detectionPanel.add(detectionGrid, BorderLayout.CENTER);
 
         JPanel payloadPanel = createSectionPanel("自定义策略");
+
+        JPanel ratePanel = createSectionPanel("速率控制");
+        JSpinner threadSpinner = new JSpinner(new SpinnerNumberModel(state.concurrentScans(), 1, 20, 1));
+        JSpinner delaySpinner = new JSpinner(new SpinnerNumberModel(state.requestDelayMs(), 0, 10000, 50));
+        threadSpinner.addChangeListener(e -> {
+            int val = (Integer) threadSpinner.getValue();
+            state.concurrentScans(val);
+            engine.updateConcurrentScans(val);
+        });
+        delaySpinner.addChangeListener(e -> state.requestDelayMs((Integer) delaySpinner.getValue()));
+        JPanel rateGrid = new JPanel(new GridLayout(2, 2, 8, 4));
+        rateGrid.add(new JLabel("并发线程数"));
+        rateGrid.add(threadSpinner);
+        rateGrid.add(new JLabel("请求间隔(ms)"));
+        rateGrid.add(delaySpinner);
+        ratePanel.add(rateGrid, BorderLayout.CENTER);
         JPanel payloadGrid = new JPanel(new GridLayout(1, 2, 8, 2));
         payloadGrid.setBorder(new EmptyBorder(0, 0, 0, 0));
 
@@ -265,6 +308,8 @@ public final class XiaSqlPanel {
         generalBody.setLayout(new BoxLayout(generalBody, BoxLayout.Y_AXIS));
         generalBody.add(detectionPanel);
         generalBody.add(Box.createVerticalStrut(6));
+        generalBody.add(ratePanel);
+        generalBody.add(Box.createVerticalStrut(6));
         generalBody.add(payloadPanel);
 
         JPanel generalContent = new JPanel();
@@ -276,7 +321,8 @@ public final class XiaSqlPanel {
         generalPanel.add(generalContent, BorderLayout.NORTH);
 
         JPanel whitelistPanel = createListConfigPanel("白名单域名，多个用逗号分隔", whitelist, whitelistEnabled);
-        JPanel blacklistPanel = createListConfigPanel("黑名单域名，多个用逗号分隔", blacklist, blacklistEnabled);
+        JPanel blacklistPanel = buildListEditPanel("黑名单域名", blacklistModel, blacklistEnabled,
+                () -> syncListModelToState(blacklistModel, v -> state.blacklistText(v)));
         JPanel suffixFilterPanel = createListConfigPanel("后缀过滤，多个用逗号分隔", suffixFilters, suffixFilterEnabled);
         JPanel payloadModePanel = createSelectionPanel("Payload 分组", payloadGroupMode);
 
@@ -342,6 +388,67 @@ public final class XiaSqlPanel {
         return panel;
     }
 
+    private static JPanel buildListEditPanel(String title, DefaultListModel<String> model,
+                                             JCheckBox enabledCheckBox, Runnable syncToState) {
+        JPanel panel = new JPanel(new BorderLayout(0, 8));
+        panel.setBorder(new EmptyBorder(8, 8, 8, 8));
+
+        JLabel label = new JLabel(title);
+        label.setBorder(BorderFactory.createEmptyBorder(0, 0, 4, 0));
+
+        JList<String> list = new JList<>(model);
+        JScrollPane scrollPane = new JScrollPane(list);
+
+        JTextField inputField = new JTextField();
+        JButton addBtn = new JButton("添加");
+        JButton removeBtn = new JButton("删除选中");
+
+        Runnable addAction = () -> {
+            String text = inputField.getText().trim();
+            if (!text.isEmpty()) {
+                model.addElement(text);
+                inputField.setText("");
+                syncToState.run();
+            }
+        };
+        addBtn.addActionListener(e -> addAction.run());
+        inputField.addActionListener(e -> addAction.run());
+
+        removeBtn.addActionListener(e -> {
+            int[] selected = list.getSelectedIndices();
+            for (int i = selected.length - 1; i >= 0; i--) {
+                model.remove(selected[i]);
+            }
+            syncToState.run();
+        });
+
+        JPanel inputRow = new JPanel(new BorderLayout(4, 0));
+        inputRow.add(inputField, BorderLayout.CENTER);
+        inputRow.add(addBtn, BorderLayout.EAST);
+
+        JPanel bottomRow = new JPanel(new BorderLayout(4, 0));
+        bottomRow.add(enabledCheckBox, BorderLayout.WEST);
+        bottomRow.add(removeBtn, BorderLayout.EAST);
+
+        panel.add(label, BorderLayout.NORTH);
+        panel.add(scrollPane, BorderLayout.CENTER);
+        JPanel south = new JPanel(new GridLayout(2, 1, 0, 4));
+        south.add(inputRow);
+        south.add(bottomRow);
+        panel.add(south, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private static void syncListModelToState(DefaultListModel<String> model,
+                                             java.util.function.Consumer<String> setter) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < model.size(); i++) {
+            if (i > 0) { sb.append(","); }
+            sb.append(model.get(i));
+        }
+        setter.accept(sb.toString());
+    }
+
     private void show(HttpRequestResponse requestResponse) {
         if (requestResponse == null) {
             return;
@@ -352,22 +459,31 @@ public final class XiaSqlPanel {
         }
     }
 
-    private void refreshTables() {
-        mainTableModel.reload();
-        attemptTableModel.reload();
-        refreshUiLog();
-    }
-
     private void refreshUiLog() {
         uiLogArea.setText(String.join("\n", state.uiLogSnapshot()));
     }
 
     private final class MainTableModel extends AbstractTableModel {
         private final String[] columns = {"#", "来源", "URL", "返回包长度", "状态"};
-        private List<ScanLogEntry> entries = Collections.emptyList();
+        private final List<ScanLogEntry> entries = new ArrayList<>();
 
-        void reload() {
-            entries = logStore.scans();
+        void addEntry(ScanLogEntry entry) {
+            entries.add(entry);
+            fireTableRowsInserted(entries.size() - 1, entries.size() - 1);
+        }
+
+        void updateEntry(ScanLogEntry entry) {
+            for (int i = 0; i < entries.size(); i++) {
+                if (entries.get(i).id() == entry.id()) {
+                    entries.set(i, entry);
+                    fireTableRowsUpdated(i, i);
+                    return;
+                }
+            }
+        }
+
+        void clear() {
+            entries.clear();
             fireTableDataChanged();
         }
 
@@ -412,20 +528,40 @@ public final class XiaSqlPanel {
 
     private final class AttemptTableModel extends AbstractTableModel {
         private final String[] columns = {"参数", "payload", "返回包长度", "变化", "相似度", "判定", "用时", "响应码", "变异器"};
-        private List<ScanLogEntry> entries = Collections.emptyList();
+        private final List<ScanLogEntry> allAttempts = new ArrayList<>();
+        private final List<ScanLogEntry> visibleEntries = new ArrayList<>();
 
-        void reload() {
-            entries = selectedFingerprint.trim().isEmpty() ? Collections.emptyList() : logStore.attemptsFor(selectedFingerprint);
+        void addEntry(ScanLogEntry entry) {
+            allAttempts.add(entry);
+            if (entry.fingerprint().equals(selectedFingerprint)) {
+                visibleEntries.add(entry);
+                fireTableRowsInserted(visibleEntries.size() - 1, visibleEntries.size() - 1);
+            }
+        }
+
+        void showFingerprint(String fingerprint) {
+            visibleEntries.clear();
+            for (ScanLogEntry e : allAttempts) {
+                if (e.fingerprint().equals(fingerprint)) {
+                    visibleEntries.add(e);
+                }
+            }
+            fireTableDataChanged();
+        }
+
+        void clear() {
+            allAttempts.clear();
+            visibleEntries.clear();
             fireTableDataChanged();
         }
 
         ScanLogEntry entryAt(int row) {
-            return entries.get(row);
+            return visibleEntries.get(row);
         }
 
         @Override
         public int getRowCount() {
-            return entries.size();
+            return visibleEntries.size();
         }
 
         @Override
@@ -440,7 +576,7 @@ public final class XiaSqlPanel {
 
         @Override
         public Object getValueAt(int rowIndex, int columnIndex) {
-            ScanLogEntry entry = entries.get(rowIndex);
+            ScanLogEntry entry = visibleEntries.get(rowIndex);
             switch (columnIndex) {
                 case 0:
                     return entry.parameter();

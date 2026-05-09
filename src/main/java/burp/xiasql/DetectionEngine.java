@@ -22,6 +22,8 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -32,7 +34,7 @@ public final class DetectionEngine {
     private final ScanLogStore logStore;
     private final RequestMutationService mutationService;
     private final ResponseComparator responseComparator;
-    private final ExecutorService executor = Executors.newFixedThreadPool(4);
+    private final ThreadPoolExecutor executor;
 
     public DetectionEngine(MontoyaApi api, ExtensionState state, ScanLogStore logStore) {
         this.api = api;
@@ -40,6 +42,14 @@ public final class DetectionEngine {
         this.logStore = logStore;
         this.mutationService = new RequestMutationService(new JsonParameterMutator(), new StandardParameterMutator());
         this.responseComparator = new ResponseComparator();
+        int threads = state.concurrentScans();
+        this.executor = new ThreadPoolExecutor(threads, threads, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<>());
+    }
+
+    public void updateConcurrentScans(int size) {
+        int n = Math.max(1, Math.min(20, size));
+        executor.setCorePoolSize(n);
+        executor.setMaximumPoolSize(n);
     }
 
     public void scanAsync(HttpRequestResponse requestResponse, ToolType source) {
@@ -95,6 +105,7 @@ public final class DetectionEngine {
                     long start = System.nanoTime();
                     HttpRequestResponse mutated = api.http().sendRequest(mutation.request());
                     long durationMillis = (System.nanoTime() - start) / 1_000_000L;
+                    sleepIfNeeded();
 
                     HttpResponse response = mutated.response();
                     int currentLength = responseLength(response);
@@ -117,6 +128,7 @@ public final class DetectionEngine {
                             analysis.changeSummary(), fingerprint, durationMillis, analysis.verdict().code(), statusCode(response), mutation.mutatorName(),
                             analysis.verdict(), analysis.similarity());
                     logStore.addAttempt(attempt);
+                    updateRunningScanRow(parent, overallVerdict, suspiciousAttempts, analysis.signals());
                 }
             }
 
@@ -134,6 +146,7 @@ public final class DetectionEngine {
                     long start = System.nanoTime();
                     HttpRequestResponse mutated = api.http().sendRequest(mutation.request());
                     long durationMillis = (System.nanoTime() - start) / 1_000_000L;
+                    sleepIfNeeded();
 
                     HttpResponse response = mutated.response();
                     int currentLength = responseLength(response);
@@ -156,6 +169,7 @@ public final class DetectionEngine {
                             analysis.changeSummary(), fingerprint, durationMillis, analysis.verdict().code(), statusCode(response), mutation.mutatorName(),
                             analysis.verdict(), analysis.similarity());
                     logStore.addAttempt(attempt);
+                    updateRunningScanRow(parent, overallVerdict, suspiciousAttempts, analysis.signals());
                 }
             }
 
@@ -173,6 +187,7 @@ public final class DetectionEngine {
                     long start = System.nanoTime();
                     HttpRequestResponse mutated = api.http().sendRequest(mutation.request());
                     long durationMillis = (System.nanoTime() - start) / 1_000_000L;
+                    sleepIfNeeded();
 
                     HttpResponse response = mutated.response();
                     int currentLength = responseLength(response);
@@ -195,6 +210,7 @@ public final class DetectionEngine {
                             analysis.changeSummary(), fingerprint, durationMillis, analysis.verdict().code(), statusCode(response), mutation.mutatorName(),
                             analysis.verdict(), analysis.similarity());
                     logStore.addAttempt(attempt);
+                    updateRunningScanRow(parent, overallVerdict, suspiciousAttempts, analysis.signals());
                 }
             }
 
@@ -203,7 +219,6 @@ public final class DetectionEngine {
             parent = new ScanLogEntry(parent.id(), parent.toolType(), parent.requestResponse(), parent.url(), parent.parameter(), parent.payloadValue(),
                     parent.change(), parent.fingerprint(), parent.durationMillis(), stateText, parent.statusCode(), parent.mutatorName(), overallVerdict, parent.similarity());
             replaceScan(parent);
-            logStore.update();
         } catch (Exception ex) {
             api.logging().logToError("SqlScout scan failed: " + ex.getMessage());
         }
@@ -249,7 +264,7 @@ public final class DetectionEngine {
         }
         for (String token : whitelistText.split(",")) {
             String trimmed = token.trim();
-            if (!trimmed.isEmpty() && url.contains(trimmed)) {
+            if (!trimmed.isEmpty() && wildcardMatch(url, trimmed)) {
                 return true;
             }
         }
@@ -263,11 +278,16 @@ public final class DetectionEngine {
         }
         for (String token : blacklistText.split(",")) {
             String trimmed = token.trim();
-            if (!trimmed.isEmpty() && url.contains(trimmed)) {
+            if (!trimmed.isEmpty() && wildcardMatch(url, trimmed)) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static boolean wildcardMatch(String text, String pattern) {
+        String regex = "(?i)" + Pattern.quote(pattern).replace("\\*", "\\E.*\\Q");
+        return Pattern.matches(regex, text);
     }
 
     private List<ParsedHttpParameter> injectableParameters(HttpRequest request) {
@@ -448,9 +468,59 @@ public final class DetectionEngine {
         return "end! " + verdict.displayName();
     }
 
+    private void updateRunningScanRow(ScanLogEntry parent, FindingVerdict verdict, int suspiciousAttempts, Set<AttemptSignal> signals) {
+        String stateText = buildRunningState(verdict, suspiciousAttempts, signals);
+        ScanLogEntry runningEntry = new ScanLogEntry(
+                parent.id(),
+                parent.toolType(),
+                parent.requestResponse(),
+                parent.url(),
+                parent.parameter(),
+                parent.payloadValue(),
+                parent.change(),
+                parent.fingerprint(),
+                parent.durationMillis(),
+                stateText,
+                parent.statusCode(),
+                parent.mutatorName(),
+                verdict,
+                parent.similarity());
+        replaceScan(runningEntry);
+    }
+
+    private String buildRunningState(FindingVerdict verdict, int suspiciousAttempts, Set<AttemptSignal> signals) {
+        List<String> markers = new ArrayList<String>();
+        if (signals.contains(AttemptSignal.ERROR_PATTERN)) {
+            markers.add("Err");
+        }
+        if (signals.contains(AttemptSignal.TIME_DELAY)) {
+            markers.add("Time");
+        }
+        if (signals.contains(AttemptSignal.LENGTH_DELTA)) {
+            markers.add("Diff");
+        }
+        String markerText = markers.isEmpty() ? "" : " [" + String.join("/", markers) + "]";
+        if (suspiciousAttempts > 0) {
+            return "run... " + verdict.displayName() + " (" + suspiciousAttempts + ")" + markerText;
+        }
+        return "run..." + markerText;
+    }
+
     private void replaceScan(ScanLogEntry replacement) {
         logStore.replaceScan(replacement);
     }
+
+    private void sleepIfNeeded() {
+        int delay = state.requestDelayMs();
+        if (delay > 0) {
+            try {
+                Thread.sleep(delay);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
 
     private HttpRequestResponse applyHighlight(HttpRequestResponse response, RequestMutation mutation) {
         if (response == null || mutation == null || !mutation.hasHighlight()) {
